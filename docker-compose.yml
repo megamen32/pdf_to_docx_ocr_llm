@@ -1,0 +1,15 @@
+services:
+  pdf2docx:
+    build: .
+    image: pdf-to-docx-ocr-llm:latest
+    environment:
+      # OpenAI-compatible endpoint. For Ollama/Open WebUI proxies usually keep /v1.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://llm.bezrabotnyi.com/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-qwen3.5}
+      OCR_LANG: ${OCR_LANG:-rus+eng}
+      USE_LLM: ${USE_LLM:-1}
+    volumes:
+      - ./input:/data/input
+      - ./output:/data/output
+      - ./work:/data/work
