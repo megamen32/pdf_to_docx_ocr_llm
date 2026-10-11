@@ -1,4 +1,4 @@
-# PDF scan → editable DOCX через OCR + Marker + Qwen/Ollama
+# PDF scan → editable DOCX через OCR + Marker + GLM 5.3 Flash
 
 Контейнер делает пайплайн:
 
@@ -6,7 +6,7 @@
 сканированный PDF
   → OCRmyPDF/Tesseract: текстовый слой, выравнивание, поворот страниц
   → Marker: восстановление структуры в Markdown
-  → Qwen/Ollama: чистка переносов, абзацев, заголовков и таблиц
+  → GLM 5.3 Flash: чистка переносов, абзацев, заголовков и таблиц
   → Pandoc/LibreOffice: DOCX
 ```
 
@@ -111,13 +111,13 @@ curl -f -X POST   -F "file=@input/input.pdf"   http://localhost:8010/convert   -
 По умолчанию используется OpenAI-compatible endpoint:
 
 ```text
-https://llm.bezrabotnyi.com/v1
+https://api.z.ai/api/anthropic
 ```
 
 Модель по умолчанию:
 
 ```text
-qwen3.5
+glm-5.3-flash
 ```
 
 Можно поменять через `.env`:
@@ -130,7 +130,7 @@ nano .env
 Или одной командой:
 
 ```bash
-OPENAI_BASE_URL=https://llm.bezrabotnyi.com/v1 OPENAI_API_KEY=ollama LLM_MODEL=qwen3.5 docker compose run --rm pdf2docx convert --input /data/input/input.pdf --output /data/output/result.docx
+OPENAI_BASE_URL=https://api.z.ai/api/anthropic OPENAI_API_KEY=ollama LLM_MODEL=glm-5.3-flash docker compose run --rm pdf2docx convert --input /data/input/input.pdf --output /data/output/result.docx
 ```
 
 Если модель в Ollama называется иначе, например `qwen2.5:32b` или `qwen3:32b`, поменяй `LLM_MODEL`.
@@ -147,3 +147,12 @@ USE_LLM=0 docker compose run --rm pdf2docx convert   --input /data/input/input.p
 - OCRmyPDF лучше работает, если страницы не сильно смазаны.
 - LLM здесь не распознаёт изображение напрямую, а чистит уже извлечённый текст/Markdown.
 - Для секретных документов лучше запускать только локальную LLM/локальный endpoint.
+
+## Z.ai subscription
+
+The default model is `glm-5.3-flash`. Set `OPENAI_API_KEY` to your own Z.ai
+Coding Plan key in the protected environment. The Anthropic API is detected
+from the base URL; set `LLM_API_STYLE=anthropic` to select it explicitly.
+`LLM_API_STYLE=openai` preserves compatibility with other providers.
+Use `LLM_FAIL_FAST=1` for evaluation so a failed model call cannot silently
+be replaced with uncleaned Markdown. Truncated or empty output fails clearly.

@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import uuid
+import json
+import urllib.request
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +26,8 @@ SYSTEM_PROMPT = """Ты аккуратный редактор OCR-текста.
 - склеить переносы слов внутри строки;
 - восстановить абзацы;
 - сохранить заголовки, списки, таблицы и нумерацию;
+- раскрыть объединённые ячейки таблиц по покрываемым строкам, сохранив настоящие пустые ячейки;
+- сохранить все строки, столбцы, единицы измерения и многоуровневые заголовки;
 - не выдумывать отсутствующие фрагменты;
 - если текст сомнителен, оставь как есть.
 Верни только исправленный Markdown без комментариев.
@@ -97,20 +101,41 @@ def chunk_markdown(text: str, max_chars: int = 9000) -> list[str]:
 
 
 def llm_cleanup(markdown: str, *, base_url: str, api_key: str, model: str) -> str:
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    api_style = os.getenv("LLM_API_STYLE", "auto")
+    if api_style not in {"auto", "openai", "anthropic"}:
+        raise ValueError("LLM_API_STYLE must be auto, openai, or anthropic")
+    if api_style == "auto":
+        api_style = "anthropic" if "/anthropic" in base_url else "openai"
+    max_tokens = int(os.getenv("LLM_MAX_TOKENS", "16384"))
+    client = OpenAI(base_url=base_url, api_key=api_key) if api_style == "openai" else None
     chunks = chunk_markdown(markdown)
     cleaned: list[str] = []
     for i, chunk in enumerate(chunks, start=1):
         print(f"LLM cleanup chunk {i}/{len(chunks)} with model={model}", flush=True)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": chunk},
-            ],
-            temperature=0,
-        )
-        content = resp.choices[0].message.content or ""
+        if api_style == "anthropic":
+            endpoint = base_url.rstrip("/")
+            endpoint = endpoint if endpoint.endswith("/v1") else endpoint + "/v1"
+            payload = {"model": model, "max_tokens": max_tokens, "system": SYSTEM_PROMPT,
+                       "messages": [{"role": "user", "content": chunk}]}
+            request = urllib.request.Request(endpoint + "/messages",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=int(os.getenv("LLM_TIMEOUT", "180"))) as response:
+                body = json.load(response)
+            if body.get("stop_reason") == "max_tokens":
+                raise RuntimeError("LLM output truncated; increase LLM_MAX_TOKENS")
+            content = "\n".join(block.get("text", "") for block in body.get("content", []) if block.get("type") == "text")
+        else:
+            resp = client.chat.completions.create(
+                model=model, max_tokens=max_tokens,
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": chunk}],
+                temperature=0,
+            )
+            if resp.choices[0].finish_reason == "length":
+                raise RuntimeError("LLM output truncated; increase LLM_MAX_TOKENS")
+            content = resp.choices[0].message.content or ""
+        if not content.strip():
+            raise RuntimeError("LLM returned empty Markdown")
         cleaned.append(content.strip())
     return "\n\n".join(cleaned).strip() + "\n"
 
@@ -206,12 +231,14 @@ def convert_pdf_to_docx(
 
     if use_llm:
         print("Step 3/4: Clean Markdown with LLM", flush=True)
-        base_url = os.getenv("OPENAI_BASE_URL", "https://llm.bezrabotnyi.com/v1")
-        api_key = os.getenv("OPENAI_API_KEY", "ollama")
-        model = os.getenv("LLM_MODEL", "qwen3.5")
+        base_url = os.getenv("OPENAI_BASE_URL", "https://api.z.ai/api/anthropic")
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        model = os.getenv("LLM_MODEL", "glm-5.3-flash")
         try:
             cleaned = llm_cleanup(raw_text, base_url=base_url, api_key=api_key, model=model)
         except Exception as exc:
+            if os.getenv("LLM_FAIL_FAST", "0") == "1":
+                raise
             print(f"LLM cleanup failed, using raw Markdown. Error: {exc}", flush=True)
             cleaned = raw_text
         final_md.write_text(cleaned, encoding="utf-8")
